@@ -1,0 +1,249 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { UserPlus, UserMinus, RotateCcw, Users, Camera, CameraOff } from 'lucide-react';
+import Webcam from 'react-webcam';
+import * as tf from '@tensorflow/tfjs';
+import * as cocossd from '@tensorflow-models/coco-ssd';
+
+function App() {
+  const [count, setCount] = useState<number>(0);
+  const [history, setHistory] = useState<{ timestamp: string; count: number }[]>([]);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [model, setModel] = useState<cocossd.ObjectDetection | null>(null);
+  const [isModelLoading, setIsModelLoading] = useState(false);
+  const [cameraError, setCameraError] = useState<string>('');
+  const webcamRef = useRef<Webcam>(null);
+  const detectionInterval = useRef<number>();
+
+  const videoConstraints = {
+    width: 640,
+    height: 480,
+    facingMode: "user",
+    aspectRatio: 1.333333
+  };
+
+  useEffect(() => {
+    const savedCount = localStorage.getItem('peopleCount');
+    const savedHistory = localStorage.getItem('countHistory');
+    
+    if (savedCount) {
+      setCount(parseInt(savedCount));
+    }
+    if (savedHistory) {
+      setHistory(JSON.parse(savedHistory));
+    }
+
+    // Load TensorFlow model
+    const loadModel = async () => {
+      setIsModelLoading(true);
+      try {
+        await tf.ready();
+        const loadedModel = await cocossd.load();
+        setModel(loadedModel);
+      } catch (error) {
+        console.error('Error loading model:', error);
+      }
+      setIsModelLoading(false);
+    };
+
+    loadModel();
+
+    return () => {
+      if (detectionInterval.current) {
+        window.clearInterval(detectionInterval.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('peopleCount', count.toString());
+    localStorage.setItem('countHistory', JSON.stringify(history));
+  }, [count, history]);
+
+  const handleUserMedia = () => {
+    setCameraError('');
+    if (webcamRef.current && webcamRef.current.video) {
+      webcamRef.current.video.addEventListener('loadeddata', () => {
+        if (isCameraActive) {
+          detectionInterval.current = window.setInterval(detectPeople, 1000);
+        }
+      });
+    }
+  };
+
+  const handleUserMediaError = (error: string | DOMException) => {
+    console.error('Camera error:', error);
+    setCameraError('Failed to access camera. Please ensure you have granted camera permissions.');
+    setIsCameraActive(false);
+  };
+
+  const detectPeople = useCallback(async () => {
+    if (model && webcamRef.current && webcamRef.current.video) {
+      const video = webcamRef.current.video;
+      
+      try {
+        const predictions = await model.detect(video);
+        const peopleCount = predictions.filter(pred => pred.class === 'person').length;
+        
+        if (peopleCount !== count) {
+          setCount(peopleCount);
+          addToHistory(peopleCount);
+        }
+      } catch (error) {
+        console.error('Detection error:', error);
+      }
+    }
+  }, [model, count]);
+
+  const toggleCamera = () => {
+    if (isCameraActive) {
+      if (detectionInterval.current) {
+        window.clearInterval(detectionInterval.current);
+      }
+      setIsCameraActive(false);
+    } else {
+      setIsCameraActive(true);
+      setCameraError('');
+    }
+  };
+
+  const getBackgroundColor = (count: number) => {
+    if (count === 0) return 'from-gray-500 to-gray-600';
+    if (count <= 5) return 'from-green-500 to-emerald-600';
+    if (count <= 10) return 'from-blue-500 to-indigo-600';
+    if (count <= 20) return 'from-purple-500 to-violet-600';
+    if (count <= 30) return 'from-orange-500 to-red-600';
+    return 'from-red-600 to-pink-600';
+  };
+
+  const getStatusText = (count: number) => {
+    if (count === 0) return 'Empty';
+    if (count <= 5) return 'Quiet';
+    if (count <= 10) return 'Moderate';
+    if (count <= 20) return 'Busy';
+    if (count <= 30) return 'Very Busy';
+    return 'Overcrowded';
+  };
+
+  const incrementCount = () => {
+    setCount(prev => prev + 1);
+    addToHistory(count + 1);
+  };
+
+  const decrementCount = () => {
+    if (count > 0) {
+      setCount(prev => prev - 1);
+      addToHistory(count - 1);
+    }
+  };
+
+  const resetCount = () => {
+    setCount(0);
+    addToHistory(0);
+  };
+
+  const addToHistory = (newCount: number) => {
+    const now = new Date().toLocaleString();
+    setHistory(prev => [...prev, { timestamp: now, count: newCount }].slice(-10));
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-100 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+        <div className="flex items-center justify-between mb-8">
+          <h1 className="text-2xl font-bold text-gray-800">People Counter</h1>
+          <div className="flex gap-2">
+            <button
+              onClick={toggleCamera}
+              className={`p-2 rounded-lg transition-colors ${
+                isCameraActive 
+                  ? 'bg-red-100 hover:bg-red-200 text-red-600' 
+                  : 'bg-green-100 hover:bg-green-200 text-green-600'
+              }`}
+              disabled={isModelLoading}
+            >
+              {isCameraActive ? <CameraOff className="w-5 h-5" /> : <Camera className="w-5 h-5" />}
+            </button>
+            <Users className="w-6 h-6 text-indigo-600" />
+          </div>
+        </div>
+
+        {/* Camera View */}
+        {isCameraActive && (
+          <div className="mb-6 relative rounded-xl overflow-hidden bg-black">
+            <Webcam
+              ref={webcamRef}
+              className="w-full"
+              mirrored={true}
+              screenshotFormat="image/jpeg"
+              videoConstraints={videoConstraints}
+              onUserMedia={handleUserMedia}
+              onUserMediaError={handleUserMediaError}
+            />
+            {isModelLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white">
+                Loading AI model...
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Camera Error Message */}
+        {cameraError && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
+            {cameraError}
+          </div>
+        )}
+
+        {/* Counter Display */}
+        <div className={bg-gradient-to-r ${getBackgroundColor(count)} rounded-xl p-8 mb-6 transition-colors duration-500}>
+          <div className="text-center">
+            <div className="text-white text-sm mb-2">Current Count</div>
+            <div className="text-5xl font-bold text-white mb-2">{count}</div>
+            <div className="text-white text-sm opacity-90">{getStatusText(count)}</div>
+          </div>
+        </div>
+
+        {/* Manual Control Buttons */}
+        {!isCameraActive && (
+          <div className="grid grid-cols-3 gap-4 mb-8">
+            <button
+              onClick={decrementCount}
+              className="flex items-center justify-center p-4 rounded-xl bg-red-100 hover:bg-red-200 transition-colors"
+            >
+              <UserMinus className="w-6 h-6 text-red-600" />
+            </button>
+            
+            <button
+              onClick={resetCount}
+              className="flex items-center justify-center p-4 rounded-xl bg-gray-100 hover:bg-gray-200 transition-colors"
+            >
+              <RotateCcw className="w-6 h-6 text-gray-600" />
+            </button>
+            
+            <button
+              onClick={incrementCount}
+              className="flex items-center justify-center p-4 rounded-xl bg-green-100 hover:bg-green-200 transition-colors"
+            >
+              <UserPlus className="w-6 h-6 text-green-600" />
+            </button>
+          </div>
+        )}
+
+        {/* History Log */}
+        <div className="bg-gray-50 rounded-xl p-4">
+          <h2 className="text-sm font-semibold text-gray-700 mb-3">Recent Activity</h2>
+          <div className="space-y-2 max-h-48 overflow-auto">
+            {history.slice().reverse().map((entry, index) => (
+              <div key={index} className="flex justify-between text-sm p-2 hover:bg-gray-100 rounded">
+                <span className="text-gray-600">{entry.timestamp}</span>
+                <span className="font-medium text-gray-800">Count: {entry.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default App;
